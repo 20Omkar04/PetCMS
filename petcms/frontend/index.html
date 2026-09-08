@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>PetCMS — a journal for your animals</title>
+<link rel="stylesheet" href="/css/style.css" />
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+</head>
+<body>
+
+<!-- reusable paw SVG, referenced via <use> where needed -->
+<svg width="0" height="0" style="position:absolute">
+  <symbol id="paw-icon" viewBox="0 0 64 64">
+    <path d="M20 26c4 0 7-4.5 7-10s-3-10-7-10-7 4.5-7 10 3 10 7 10zM44 26c4 0 7-4.5 7-10s-3-10-7-10-7 4.5-7 10 3 10 7 10zM8 40c3 0 5.5-3.5 5.5-8S11 24 8 24s-5.5 3.5-5.5 8S5 40 8 40zM56 40c3 0 5.5-3.5 5.5-8S59 24 56 24s-5.5 3.5-5.5 8S53 40 56 40zM32 30c-8 0-16 8-16 16 0 5 4 8 9 8 3 0 5-1.5 7-1.5s4 1.5 7 1.5c5 0 9-3 9-8 0-8-8-16-16-16z"/>
+  </symbol>
+</svg>
+
+<!-- ============================================================ LANDING -->
+<section id="view-landing">
+  <div class="landing-hero">
+    <div class="landing-copy">
+      <div class="eyebrow">PetCMS</div>
+      <h1>Every walk, every nap,<br/><em>every good boy —</em><br/>kept in one place.</h1>
+      <p class="lede">Upload your pet photos and PetCMS quietly does the rest: reading where and when each shot was taken, tagging what's in it, and building a timeline of your animal's life you can search, map, and ask questions about.</p>
+      <ul class="landing-features">
+        <li><span class="paw"><svg><use href="#paw-icon"/></svg></span> Automatic location + timestamp from photo metadata</li>
+        <li><span class="paw"><svg><use href="#paw-icon"/></svg></span> AI tagging using your own OpenAI or Gemini key</li>
+        <li><span class="paw"><svg><use href="#paw-icon"/></svg></span> Nearby vet clinics plotted on an OpenStreetMap view</li>
+        <li><span class="paw"><svg><use href="#paw-icon"/></svg></span> A memory timeline and chatbot over your own data</li>
+      </ul>
+    </div>
+
+    <div class="auth-card">
+      <!-- STEP 1: sign in / register -->
+      <div id="onboard-step-auth" class="onboarding-step active">
+        <div class="auth-tabs">
+          <button class="auth-tab active" data-tab="login">Log in</button>
+          <button class="auth-tab" data-tab="register">Register</button>
+        </div>
+
+        <form id="login-form">
+          <h2>Welcome back</h2>
+          <p class="sub">Log in with your PetCMS user ID.</p>
+          <div class="field">
+            <label for="login-username">User ID</label>
+            <input id="login-username" autocomplete="username" required />
+          </div>
+          <div class="field">
+            <label for="login-password">Password</label>
+            <input id="login-password" type="password" autocomplete="current-password" required />
+          </div>
+          <button class="btn btn-primary btn-block" type="submit">
+            <span class="btn-label">Log in</span>
+          </button>
+          <div class="error-text" id="login-error"></div>
+        </form>
+
+        <form id="register-form" class="hidden">
+          <h2>Create your journal</h2>
+          <p class="sub">Pick a user ID and password — no email required.</p>
+          <div class="field">
+            <label for="reg-username">User ID</label>
+            <input id="reg-username" autocomplete="username" required minlength="3" />
+          </div>
+          <div class="field">
+            <label for="reg-password">Password</label>
+            <input id="reg-password" type="password" autocomplete="new-password" required minlength="8" />
+            <div class="field-hint">At least 8 characters.</div>
+          </div>
+          <button class="btn btn-primary btn-block" type="submit">
+            <span class="btn-label">Create account</span>
+          </button>
+          <div class="error-text" id="register-error"></div>
+        </form>
+      </div>
+
+      <!-- STEP 2: API key onboarding -->
+      <div id="onboard-step-key" class="onboarding-step">
+        <h2>Add your AI API key</h2>
+        <p class="sub">Used only for AI tagging and the chatbot — stored encrypted, and it's yours to remove anytime.</p>
+        <div class="apikey-callout">
+          Bring your own key from <strong>OpenAI</strong> or <strong>Google Gemini</strong>. You can skip this and add it later from Settings — uploads still work, just without AI-generated tags.
+        </div>
+        <form id="onboard-key-form">
+          <div class="field">
+            <label for="onboard-provider">Provider</label>
+            <select id="onboard-provider">
+              <option value="openai">OpenAI</option>
+              <option value="gemini">Google Gemini</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="onboard-key">API key</label>
+            <input id="onboard-key" type="password" placeholder="sk-..." autocomplete="off" />
+          </div>
+          <button class="btn btn-primary btn-block" type="submit">
+            <span class="btn-label">Save and continue</span>
+          </button>
+          <button class="btn btn-ghost btn-block" type="button" id="onboard-skip">Skip for now</button>
+          <div class="error-text" id="onboard-error"></div>
+        </form>
+      </div>
+
+      <div class="step-dots">
+        <span id="dot-1" class="active"></span><span id="dot-2"></span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- =============================================================== APP -->
+<section id="view-app" class="hidden">
+  <div class="nav-scrim" id="nav-scrim"></div>
+  <aside class="sidebar" id="sidebar">
+    <div class="brand"><span class="paw"><svg><use href="#paw-icon"/></svg></span> PetCMS</div>
+    <ul class="nav-list">
+      <li><button class="nav-item" data-route="gallery">🖼 <span>Gallery</span></button></li>
+      <li><button class="nav-item" data-route="map">🗺 <span>Map &amp; vets</span></button></li>
+      <li><button class="nav-item" data-route="timeline">📜 <span>Memory timeline</span></button></li>
+      <li><button class="nav-item" data-route="profile">👤 <span>Profile</span></button></li>
+      <li><button class="nav-item" data-route="settings">⚙️ <span>Settings</span></button></li>
+    </ul>
+    <div class="sidebar-footer">
+      <div class="user-name" id="sidebar-username">—</div>
+      <button class="btn btn-ghost" id="logout-btn" style="color:rgba(255,255,255,0.75); padding:0;">Log out</button>
+    </div>
+  </aside>
+
+  <div class="main-col">
+    <div class="mobile-topbar">
+      <button id="menu-toggle" class="btn btn-ghost" style="color:#fff; padding:4px;">☰</button>
+      <div class="brand"><span class="paw"><svg><use href="#paw-icon"/></svg></span> PetCMS</div>
+      <span style="width:24px"></span>
+    </div>
+
+    <!-- ---------------------------------------------------------- GALLERY -->
+    <div class="route-view" id="route-gallery">
+      <div class="topbar">
+        <div class="searchbox">
+          <span class="ic">🔍</span>
+          <input id="search-input" placeholder="Search captions, tags, filenames…" />
+        </div>
+        <button class="btn btn-primary" id="open-upload-btn">＋ Upload photo</button>
+      </div>
+      <div class="page-body">
+        <h1 class="page-title">Gallery</h1>
+        <p class="page-sub">Everything you've uploaded — only visible to you.</p>
+
+        <div class="filter-bar">
+          <select id="filter-pet-type">
+            <option value="">All pet types</option>
+            <option value="dog">Dog</option>
+            <option value="cat">Cat</option>
+            <option value="bird">Bird</option>
+            <option value="small_mammal">Small mammal</option>
+            <option value="reptile">Reptile</option>
+            <option value="other">Other</option>
+          </select>
+          <select id="filter-category"><option value="">All categories</option></select>
+          <input type="date" id="filter-date-from" title="From date" />
+          <input type="date" id="filter-date-to" title="To date" />
+          <button class="btn btn-secondary" id="filter-apply-btn">Apply filters</button>
+          <button class="btn btn-ghost" id="filter-clear-btn">Clear</button>
+        </div>
+        <div class="chip-row" id="tag-chip-row"></div>
+
+        <div id="gallery-grid" class="gallery-grid"></div>
+        <div id="gallery-empty" class="empty-state hidden">
+          <span class="paw"><svg><use href="#paw-icon"/></svg></span>
+          <div><strong>No photos match yet.</strong><br/>Try clearing filters, or upload your first photo.</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ---------------------------------------------------------- MAP -->
+    <div class="route-view hidden" id="route-map">
+      <div class="page-body">
+        <h1 class="page-title">Map &amp; nearby vets</h1>
+        <p class="page-sub">Pins mark where your photos were taken (from EXIF GPS data). Pick a photo to find nearby veterinary clinics.</p>
+        <div class="filter-bar">
+          <select id="map-photo-select"><option value="">Select a located photo…</option></select>
+          <button class="btn btn-secondary" id="find-vets-btn">Find nearby vets</button>
+        </div>
+        <div id="mapview"></div>
+        <div class="vet-list" id="vet-list"></div>
+      </div>
+    </div>
+
+    <!-- ---------------------------------------------------------- TIMELINE -->
+    <div class="route-view hidden" id="route-timeline">
+      <div class="page-body">
+        <h1 class="page-title">Memory timeline</h1>
+        <p class="page-sub">An automatic log of uploads and events, newest first.</p>
+        <form id="note-form" style="display:flex; gap:10px; margin-bottom:24px;">
+          <input id="note-input" placeholder="Add a note to the timeline…" style="flex:1;" />
+          <button class="btn btn-secondary" type="submit">Add note</button>
+        </form>
+        <ul class="timeline" id="timeline-list"></ul>
+      </div>
+    </div>
+
+    <!-- ---------------------------------------------------------- PROFILE -->
+    <div class="route-view hidden" id="route-profile">
+      <div class="page-body">
+        <h1 class="page-title">Profile</h1>
+        <p class="page-sub">Your PetCMS account.</p>
+        <div class="settings-card">
+          <h3 id="profile-username">—</h3>
+          <p class="sub">Member since <span id="profile-since">—</span></p>
+          <div id="profile-stats" style="font-size:0.9rem; color:var(--ink-soft); display:grid; gap:6px;"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ---------------------------------------------------------- SETTINGS -->
+    <div class="route-view hidden" id="route-settings">
+      <div class="page-body">
+        <h1 class="page-title">Settings</h1>
+        <p class="page-sub">Manage the AI API key used for tagging and the chatbot.</p>
+
+        <div class="settings-card">
+          <h3>Session &amp; JWT</h3>
+          <p class="sub">PetCMS uses Supabase Auth, which issues a signed JSON Web Token (JWT) on login. This panel decodes your <em>current</em> token client-side — purely for inspection/demo purposes; the signature itself is verified server-side on every request via <code>require_auth</code> in each service.</p>
+          <div id="jwt-panel"></div>
+        </div>
+
+        <div class="settings-card">
+          <h3>AI API key</h3>
+          <p class="sub">Stored encrypted at rest. Used only server-side to call the provider on your behalf.</p>
+          <div class="key-status" id="key-status"><span class="dot"></span><span id="key-status-text">No key configured</span></div>
+          <form id="settings-key-form">
+            <div class="field">
+              <label for="settings-provider">Provider</label>
+              <select id="settings-provider">
+                <option value="openai">OpenAI</option>
+                <option value="gemini">Google Gemini</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="settings-key">API key</label>
+              <input id="settings-key" type="password" placeholder="sk-..." autocomplete="off" />
+            </div>
+            <div style="display:flex; gap:10px;">
+              <button class="btn btn-primary" type="submit">Save key</button>
+              <button class="btn btn-danger" type="button" id="remove-key-btn">Remove key</button>
+            </div>
+            <div class="error-text" id="settings-error"></div>
+          </form>
+        </div>
+
+        <div class="settings-card">
+          <h3>Categories</h3>
+          <p class="sub">Custom categories used for filtering the gallery.</p>
+          <div class="chip-row" id="settings-category-list"></div>
+          <form id="add-category-form" style="display:flex; gap:10px;">
+            <input id="new-category-input" placeholder="e.g. Backyard, Vet visits…" style="flex:1;" />
+            <button class="btn btn-secondary" type="submit">Add</button>
+          </form>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================ UPLOAD MODAL -->
+<div class="modal-backdrop hidden" id="upload-modal">
+  <div class="modal">
+    <h3>Upload a photo</h3>
+    <p class="sub">We'll read location/timestamp from the photo automatically and suggest AI tags if you've added an API key.</p>
+    <form id="upload-form">
+      <label class="dropzone" id="dropzone" for="upload-file-input">
+        <span id="dropzone-label">Click to choose a photo, or drag one here</span>
+        <input type="file" id="upload-file-input" accept="image/*" required />
+      </label>
+      <div class="field">
+        <label for="upload-caption">Caption</label>
+        <input id="upload-caption" placeholder="e.g. First swim of the summer" />
+      </div>
+      <div class="field">
+        <label for="upload-pet-type">Pet type</label>
+        <select id="upload-pet-type">
+          <option value="dog">Dog</option>
+          <option value="cat">Cat</option>
+          <option value="bird">Bird</option>
+          <option value="small_mammal">Small mammal</option>
+          <option value="reptile">Reptile</option>
+          <option value="other">Other</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="upload-tags">Manual tags <span style="font-weight:400;">(comma separated)</span></label>
+        <input id="upload-tags" placeholder="e.g. beach, playful" />
+      </div>
+      <div class="field">
+        <label for="upload-categories">Categories <span style="font-weight:400;">(comma separated)</span></label>
+        <input id="upload-categories" placeholder="e.g. Puppy era" />
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-ghost" id="upload-cancel-btn">Cancel</button>
+        <button type="submit" class="btn btn-primary" id="upload-submit-btn">Upload</button>
+      </div>
+      <div class="error-text" id="upload-error"></div>
+    </form>
+  </div>
+</div>
+
+<!-- ============================================================ IMAGE DETAIL MODAL -->
+<div class="modal-backdrop hidden" id="detail-modal">
+  <div class="modal" id="detail-modal-content"></div>
+</div>
+
+<!-- ============================================================ CHATBOT -->
+<button class="chat-toggle hidden" id="chat-toggle-btn">💬</button>
+<div class="chat-panel hidden" id="chat-panel">
+  <div class="chat-head"><span>PetCMS assistant</span><button class="btn btn-ghost" style="color:#fff; padding:2px;" id="chat-close-btn">✕</button></div>
+  <div class="chat-messages" id="chat-messages"></div>
+  <form class="chat-input-row" id="chat-form">
+    <input id="chat-input" placeholder="Ask about your photos…" autocomplete="off" />
+    <button type="submit" class="btn btn-primary">➤</button>
+  </form>
+</div>
+
+<div id="toast-root"></div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="/js/api.js"></script>
+<script src="/js/auth.js"></script>
+<script src="/js/app.js"></script>
+<script src="/js/map.js"></script>
+<script src="/js/timeline.js"></script>
+<script src="/js/chatbot.js"></script>
+<script src="/js/jwt-utils.js"></script>
+<script src="/js/settings.js"></script>
+<script src="/js/main.js"></script>
+</body>
+</html>

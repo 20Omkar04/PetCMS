@@ -1,0 +1,121 @@
+version: "3.9"
+
+x-common-env: &common-env
+  SUPABASE_URL: ${SUPABASE_URL}
+  SUPABASE_ANON_KEY: ${SUPABASE_ANON_KEY}
+  SUPABASE_SERVICE_ROLE_KEY: ${SUPABASE_SERVICE_ROLE_KEY}
+  SUPABASE_STORAGE_BUCKET: ${SUPABASE_STORAGE_BUCKET}
+  API_KEY_ENCRYPTION_SECRET: ${API_KEY_ENCRYPTION_SECRET}
+
+services:
+  gateway:
+    build: ./gateway
+    ports:
+      - "${GATEWAY_PORT:-8080}:8080"
+    environment:
+      <<: *common-env
+      AUTH_SERVICE_URL: ${AUTH_SERVICE_URL}
+      USER_SERVICE_URL: ${USER_SERVICE_URL}
+      UPLOAD_SERVICE_URL: ${UPLOAD_SERVICE_URL}
+      STORAGE_SERVICE_URL: ${STORAGE_SERVICE_URL}
+      EXIF_SERVICE_URL: ${EXIF_SERVICE_URL}
+      AI_TAGGING_SERVICE_URL: ${AI_TAGGING_SERVICE_URL}
+      CATEGORY_SERVICE_URL: ${CATEGORY_SERVICE_URL}
+      SEARCH_SERVICE_URL: ${SEARCH_SERVICE_URL}
+      MEMORY_SERVICE_URL: ${MEMORY_SERVICE_URL}
+      CHATBOT_SERVICE_URL: ${CHATBOT_SERVICE_URL}
+      VET_MAP_SERVICE_URL: ${VET_MAP_SERVICE_URL}
+    volumes:
+      - ./frontend:/app/frontend:ro
+    depends_on:
+      - auth-service
+      - user-service
+      - upload-service
+      - storage-service
+      - exif-service
+      - ai-tagging-service
+      - category-service
+      - search-service
+      - memory-service
+      - chatbot-service
+      - vet-map-service
+    networks: [petcms-net]
+
+  auth-service:
+    build: ./services/auth-service
+    environment: *common-env
+    networks: [petcms-net]
+
+  user-service:
+    build: ./services/user-service
+    environment:
+      <<: *common-env
+      AUTH_SERVICE_URL: ${AUTH_SERVICE_URL}
+    networks: [petcms-net]
+
+  storage-service:
+    build: ./services/storage-service
+    environment: *common-env
+    networks: [petcms-net]
+
+  exif-service:
+    build: ./services/exif-service
+    environment: *common-env
+    networks: [petcms-net]
+
+  ai-tagging-service:
+    build: ./services/ai-tagging-service
+    environment:
+      <<: *common-env
+      USER_SERVICE_URL: ${USER_SERVICE_URL}
+    networks: [petcms-net]
+
+  category-service:
+    build: ./services/category-service
+    environment: *common-env
+    networks: [petcms-net]
+
+  upload-service:
+    build: ./services/upload-service
+    environment:
+      <<: *common-env
+      AUTH_SERVICE_URL: ${AUTH_SERVICE_URL}
+      STORAGE_SERVICE_URL: ${STORAGE_SERVICE_URL}
+      EXIF_SERVICE_URL: ${EXIF_SERVICE_URL}
+      AI_TAGGING_SERVICE_URL: ${AI_TAGGING_SERVICE_URL}
+      MEMORY_SERVICE_URL: ${MEMORY_SERVICE_URL}
+    depends_on: [storage-service, exif-service, ai-tagging-service, memory-service]
+    networks: [petcms-net]
+
+  search-service:
+    build: ./services/search-service
+    environment:
+      <<: *common-env
+      AUTH_SERVICE_URL: ${AUTH_SERVICE_URL}
+    networks: [petcms-net]
+
+  memory-service:
+    build: ./services/memory-service
+    environment:
+      <<: *common-env
+      AUTH_SERVICE_URL: ${AUTH_SERVICE_URL}
+    networks: [petcms-net]
+
+  chatbot-service:
+    build: ./services/chatbot-service
+    environment:
+      <<: *common-env
+      AUTH_SERVICE_URL: ${AUTH_SERVICE_URL}
+      USER_SERVICE_URL: ${USER_SERVICE_URL}
+      MEMORY_SERVICE_URL: ${MEMORY_SERVICE_URL}
+      SEARCH_SERVICE_URL: ${SEARCH_SERVICE_URL}
+    networks: [petcms-net]
+
+  vet-map-service:
+    build: ./services/vet-map-service
+    environment: *common-env
+    networks: [petcms-net]
+
+networks:
+  petcms-net:
+    driver: bridge
