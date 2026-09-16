@@ -10,6 +10,8 @@ from flask import Flask, request, jsonify
 from PIL import Image, ExifTags
 
 app = Flask(__name__)
+from prometheus_flask_exporter import PrometheusMetrics
+PrometheusMetrics(app)  # exposes GET /metrics for Prometheus scraping
 
 GPS_TAG_ID = next((k for k, v in ExifTags.TAGS.items() if v == "GPSInfo"), 34853)
 
@@ -36,6 +38,18 @@ def _extract_gps(gps_ifd):
         return lat, lng
     except Exception:
         return None, None
+
+
+def _to_iso_datetime(exif_date_str):
+    """EXIF stores dates as 'YYYY:MM:DD HH:MM:SS' — Postgres needs ISO 8601."""
+    if not exif_date_str:
+        return None
+    try:
+        from datetime import datetime
+        dt = datetime.strptime(exif_date_str, "%Y:%m:%d %H:%M:%S")
+        return dt.isoformat()
+    except (ValueError, TypeError):
+        return None
 
 
 @app.post("/extract")
@@ -77,7 +91,8 @@ def extract():
     else:
         result["debug"]["note"] = "EXIF present but no GPSInfo block — this photo has no location tag."
 
-    result["taken_at"] = decoded.get("DateTimeOriginal") or decoded.get("DateTime")
+    raw_taken_at = decoded.get("DateTimeOriginal") or decoded.get("DateTime")
+    result["taken_at"] = _to_iso_datetime(raw_taken_at)
     make = decoded.get("Make", "")
     model = decoded.get("Model", "")
     device = f"{make} {model}".strip()

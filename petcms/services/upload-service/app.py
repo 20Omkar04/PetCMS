@@ -1,24 +1,34 @@
 """
 Upload Service
-Orchestrates a single image upload across several services:
-  1. storage-service   -> stores the file in Supabase Storage
-  2. exif-service       -> extracts GPS / timestamp / device metadata
-  3. ai-tagging-service -> generates AI tags using the user's own API key
-  4. writes the resulting `images` row itself (this service owns that table)
-  5. memory-service     -> logs an "upload" event to the timeline
+Orchestrates a single image upload:
+  1. storage-service   -> stores the file in Supabase Storage         (sync — fast, local to our infra)
+  2. exif-service       -> extracts GPS / timestamp / device metadata  (sync — fast, local to our infra)
+  3. writes the `images` row itself with tagging_status='processing'  (this service owns that table)
+  4. memory-service     -> logs an "upload" event to the timeline
+  5. AI tagging is enqueued onto a Redis queue (RQ) rather than called synchronously —
+     it's a slow, unreliable external network call (OpenAI/Gemini), and a timeout there
+     must never fail the upload itself. ai-tagging-worker consumes the queue in the
+     background and updates the row + timeline when done (see ai-tagging-service/worker.py).
 """
 import os
 import requests
 from datetime import datetime, timezone
 from flask import Flask, request, jsonify
+from redis import Redis
+from rq import Queue
 from common import get_admin_client, require_auth
 
 app = Flask(__name__)
+from prometheus_flask_exporter import PrometheusMetrics
+PrometheusMetrics(app)  # exposes GET /metrics for Prometheus scraping
 
 STORAGE_SERVICE_URL = os.environ.get("STORAGE_SERVICE_URL", "http://storage-service:5004")
 EXIF_SERVICE_URL = os.environ.get("EXIF_SERVICE_URL", "http://exif-service:5005")
-AI_TAGGING_SERVICE_URL = os.environ.get("AI_TAGGING_SERVICE_URL", "http://ai-tagging-service:5006")
 MEMORY_SERVICE_URL = os.environ.get("MEMORY_SERVICE_URL", "http://memory-service:5009")
+REDIS_URL = os.environ.get("REDIS_URL", "redis://redis:6379/0")
+
+redis_conn = Redis.from_url(REDIS_URL)
+tagging_queue = Queue("petcms-tagging", connection=redis_conn)
 
 
 @app.get("/health")
@@ -65,28 +75,9 @@ def upload_image(user):
     except Exception:
         pass
 
-    # 3) AI tagging (best-effort; never blocks the upload)
-    ai_tags = []
-    ai_tag_issue = None
-    try:
-        ai_resp = requests.post(
-            f"{AI_TAGGING_SERVICE_URL}/tag",
-            data={"user_id": user.id},
-            files={"file": (file.filename, file_bytes, file.mimetype)},
-            timeout=35,
-        )
-        if ai_resp.status_code == 200:
-            ai_json = ai_resp.json()
-            ai_tags = ai_json.get("tags", [])
-            ai_tag_issue = ai_json.get("error") or ai_json.get("note")
-        else:
-            ai_tag_issue = f"ai-tagging-service returned HTTP {ai_resp.status_code}"
-    except Exception as e:
-        ai_tag_issue = f"could not reach ai-tagging-service: {e}"
-
-    all_tags = sorted(set(ai_tags) | set(manual_tags))
     taken_at = exif_data.get("taken_at") or datetime.now(timezone.utc).isoformat()
 
+    # 3) write the row immediately — AI tags are not known yet
     admin = get_admin_client()
     row = {
         "owner_id": user.id,
@@ -95,14 +86,15 @@ def upload_image(user):
         "caption": caption,
         "pet_type": pet_type,
         "categories": categories,
-        "tags": all_tags,
-        "ai_tags": ai_tags,
+        "tags": manual_tags,          # AI tags will be merged in by the worker
+        "ai_tags": [],
         "manual_tags": manual_tags,
         "exif": exif_data.get("raw", {}),
         "gps_lat": exif_data.get("gps_lat"),
         "gps_lng": exif_data.get("gps_lng"),
         "taken_at": taken_at,
         "device": exif_data.get("device"),
+        "tagging_status": "processing",
     }
     insert_res = admin.table("images").insert(row).execute()
     image_row = insert_res.data[0] if insert_res.data else row
@@ -122,7 +114,24 @@ def upload_image(user):
     except Exception:
         pass
 
-    if ai_tag_issue:
+    # 5) enqueue AI tagging — fire-and-forget from this request's point of view.
+    # If Redis itself is unreachable, tagging just stays "processing" forever
+    # rather than failing the upload; that degraded state is visible to the
+    # user in the UI rather than silently hidden.
+    try:
+        tagging_queue.enqueue(
+            "worker.process_tagging_job",
+            kwargs={
+                "image_id": image_row.get("id"),
+                "user_id": user.id,
+                "storage_path": storage_data["storage_path"],
+                "filename": file.filename,
+                "mime_type": file.mimetype,
+                "manual_tags": manual_tags,
+            },
+            job_timeout=90,
+        )
+    except Exception as e:
         try:
             requests.post(
                 f"{MEMORY_SERVICE_URL}/internal/events",
@@ -130,7 +139,7 @@ def upload_image(user):
                     "owner_id": user.id,
                     "image_id": image_row.get("id"),
                     "event_type": "note",
-                    "description": f"AI tagging skipped for {file.filename}: {ai_tag_issue}",
+                    "description": f"Could not enqueue AI tagging for {file.filename}: {e}",
                 },
                 timeout=10,
             )

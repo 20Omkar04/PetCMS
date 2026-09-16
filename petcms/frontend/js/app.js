@@ -68,6 +68,30 @@ const PetCMSApp = (() => {
     return map[pt] || "Other";
   }
 
+  function taggingStatusBadge(status) {
+    if (status === "processing") return `· <span style="color:var(--ochre-dark); font-weight:600;">🕒 tagging…</span>`;
+    if (status === "failed") return `· <span style="color:var(--danger); font-weight:600;">⚠ tagging failed</span>`;
+    return "";
+  }
+
+  // Polls a single image until the async ai-tagging-worker marks it
+  // ready/failed/skipped, then refreshes the gallery — this is what makes
+  // the async pipeline visibly finish in the UI rather than requiring a
+  // manual page reload. Gives up after ~30s so a stuck job doesn't poll forever.
+  async function pollTaggingStatus(imageId, attempt = 0) {
+    if (!imageId || attempt > 15) return;
+    try {
+      const img = await PetAPI.get(`/api/images/${imageId}`);
+      if (img.tagging_status === "processing") {
+        setTimeout(() => pollTaggingStatus(imageId, attempt + 1), 2000);
+      } else {
+        loadGallery();
+      }
+    } catch (e) {
+      // image may have been deleted mid-poll, or a transient network error — stop quietly
+    }
+  }
+
   async function loadGallery() {
     const grid = document.getElementById("gallery-grid");
     const empty = document.getElementById("gallery-empty");
@@ -108,7 +132,7 @@ const PetCMSApp = (() => {
       const takenDate = img.taken_at ? new Date(img.taken_at).toLocaleDateString() : "Unknown date";
       body.innerHTML = `
         <div class="caption">${escapeHtml(img.caption || img.filename || "Untitled")}</div>
-        <div class="meta">📅 ${takenDate} ${img.gps_lat ? " · 📍 located" : ""}</div>
+        <div class="meta">📅 ${takenDate} ${img.gps_lat ? " · 📍 located" : ""} ${taggingStatusBadge(img.tagging_status)}</div>
         <div class="tags">${(img.tags || []).slice(0, 5).map((t) => `<span class="tag-pill">${escapeHtml(t)}</span>`).join("")}</div>
         <div class="card-actions">
           <button class="btn btn-secondary btn-view">View</button>
@@ -186,7 +210,7 @@ const PetCMSApp = (() => {
       <p class="sub">${petTypeLabel(img.pet_type)} · ${takenDate}${img.device ? " · " + escapeHtml(img.device) : ""}</p>
       <div style="width:100%; aspect-ratio:4/3; background:var(--ground-alt); border-radius:12px; overflow:hidden; margin-bottom:16px;" id="detail-img-holder"></div>
 
-      <label style="margin-bottom:6px;">Tags</label>
+      <label style="margin-bottom:6px;">Tags ${taggingStatusBadge(img.tagging_status)}</label>
       <div class="tags" id="detail-tags-row" style="margin-bottom:10px;"></div>
       <div style="display:flex; gap:8px; margin-bottom:14px;">
         <input id="detail-new-tag-input" placeholder="Add a tag…" style="flex:1;" />
@@ -316,10 +340,11 @@ const PetCMSApp = (() => {
       fd.append("categories", document.getElementById("upload-categories").value.trim());
 
       try {
-        await PetAPI.postForm("/api/images", fd);
+        const created = await PetAPI.postForm("/api/images", fd);
         modal.classList.add("hidden");
-        showToast("Photo uploaded — tagging may take a few seconds to appear.");
+        showToast("Photo uploaded — tagging in the background.");
         loadGallery();
+        pollTaggingStatus(created.id);
       } catch (err) {
         errorEl.textContent = err.message || "Upload failed.";
       } finally {

@@ -9,6 +9,8 @@ from flask import Flask, request, jsonify
 from common import get_admin_client, require_auth
 
 app = Flask(__name__)
+from prometheus_flask_exporter import PrometheusMetrics
+PrometheusMetrics(app)  # exposes GET /metrics for Prometheus scraping
 
 
 @app.get("/health")

@@ -9,6 +9,8 @@ import requests
 from flask import Flask, request, jsonify, send_from_directory, Response
 
 app = Flask(__name__, static_folder=None)
+from prometheus_flask_exporter import PrometheusMetrics
+PrometheusMetrics(app)  # exposes GET /metrics for Prometheus scraping
 
 SERVICES = {
     "auth": os.environ.get("AUTH_SERVICE_URL", "http://auth-service:5001"),

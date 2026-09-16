@@ -8,6 +8,10 @@ x-common-env: &common-env
   API_KEY_ENCRYPTION_SECRET: ${API_KEY_ENCRYPTION_SECRET}
 
 services:
+  redis:
+    image: redis:7-alpine
+    networks: [petcms-net]
+
   gateway:
     build: ./gateway
     ports:
@@ -70,6 +74,22 @@ services:
       USER_SERVICE_URL: ${USER_SERVICE_URL}
     networks: [petcms-net]
 
+  # Same image as ai-tagging-service, but runs an RQ worker instead of the
+  # web server — consumes the "petcms-tagging" queue that upload-service
+  # enqueues to. Scale independently of the (rarely-used) sync web endpoint:
+  #   docker compose up --scale ai-tagging-worker=3
+  ai-tagging-worker:
+    build: ./services/ai-tagging-service
+    command: ["rq", "worker", "petcms-tagging", "--url", "redis://redis:6379/0"]
+    environment:
+      <<: *common-env
+      USER_SERVICE_URL: ${USER_SERVICE_URL}
+      STORAGE_SERVICE_URL: ${STORAGE_SERVICE_URL}
+      MEMORY_SERVICE_URL: ${MEMORY_SERVICE_URL}
+      REDIS_URL: redis://redis:6379/0
+    depends_on: [redis]
+    networks: [petcms-net]
+
   category-service:
     build: ./services/category-service
     environment: *common-env
@@ -82,9 +102,9 @@ services:
       AUTH_SERVICE_URL: ${AUTH_SERVICE_URL}
       STORAGE_SERVICE_URL: ${STORAGE_SERVICE_URL}
       EXIF_SERVICE_URL: ${EXIF_SERVICE_URL}
-      AI_TAGGING_SERVICE_URL: ${AI_TAGGING_SERVICE_URL}
       MEMORY_SERVICE_URL: ${MEMORY_SERVICE_URL}
-    depends_on: [storage-service, exif-service, ai-tagging-service, memory-service]
+      REDIS_URL: redis://redis:6379/0
+    depends_on: [storage-service, exif-service, memory-service, redis]
     networks: [petcms-net]
 
   search-service:
@@ -114,6 +134,28 @@ services:
   vet-map-service:
     build: ./services/vet-map-service
     environment: *common-env
+    networks: [petcms-net]
+
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    networks: [petcms-net]
+
+  grafana:
+    image: grafana/grafana:11.2.0
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+    ports:
+      - "3000:3000"
+    depends_on: [prometheus]
     networks: [petcms-net]
 
 networks:

@@ -11,6 +11,8 @@ import requests
 from flask import Flask, request, jsonify
 
 app = Flask(__name__)
+from prometheus_flask_exporter import PrometheusMetrics
+PrometheusMetrics(app)  # exposes GET /metrics for Prometheus scraping
 
 OVERPASS_URLS = [
     os.environ.get("OVERPASS_URL", "https://lz4.overpass-api.de/api/interpreter"),

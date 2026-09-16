@@ -4,6 +4,7 @@
 -- Assumes Supabase Auth is already enabled (auth.users table exists).
 -- =========================================================================
 
+
 create extension if not exists "uuid-ossp";
 
 -- ---------------------------------------------------------------- profiles
@@ -53,6 +54,7 @@ create table if not exists public.images (
   gps_lat double precision,
   gps_lng double precision,
   taken_at timestamptz,               -- from EXIF DateTimeOriginal, falls back to upload time
+  tagging_status text not null default 'processing', -- 'processing' | 'ready' | 'failed' | 'skipped_no_key'
   device text,                        -- camera/phone model from EXIF
   created_at timestamptz not null default now()
 );
@@ -61,6 +63,9 @@ create index if not exists images_owner_idx on public.images (owner_id);
 create index if not exists images_taken_at_idx on public.images (taken_at);
 create index if not exists images_tags_idx on public.images using gin (tags);
 create index if not exists images_categories_idx on public.images using gin (categories);
+
+-- Safe to re-run: adds the column if this schema was applied before it existed.
+alter table public.images add column if not exists tagging_status text not null default 'ready';
 
 alter table public.images enable row level security;
 create policy "images_owner_all" on public.images

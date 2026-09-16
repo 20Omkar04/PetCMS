@@ -1,4 +1,4 @@
-<img width="1900" height="1440" alt="image" src="https://github.com/user-attachments/assets/1405e273-cf50-4498-a60f-aee350361d1d" /># PetCMS
+# PetCMS
 
 An Imgur-style photo gallery for your pets: upload a photo and PetCMS
 automatically reads its location and timestamp, suggests AI tags using
@@ -9,6 +9,8 @@ searchable memory timeline you can ask a built-in chatbot about.
 It's built as 12 small Dockerized services behind a single gateway, using
 Supabase for auth/database/storage, and vanilla HTML/CSS/JS on the frontend
 — no frameworks, no build step.
+
+![PetCMS architecture](docs/architecture.png)
 
 ## Features
 
@@ -41,16 +43,18 @@ Gateway  ── serves the frontend, proxies /api/*, every route is JWT-checked
       │
       ├── Auth service        (register/login/refresh via Supabase Auth)
       ├── User service         (profile + encrypted AI API key)
-      ├── Upload service       (orchestrates the pipeline below)
+      ├── Upload service       (orchestrates storage + EXIF, then enqueues tagging)
       │     ├── Storage service    (Supabase Storage)
-      │     ├── EXIF service       (Pillow — GPS/timestamp/device)
-      │     ├── AI Tagging service (OpenAI/Gemini, user's own key)
-      │     └── Memory service     (timeline logging)
+      │     └── EXIF service       (Pillow — GPS/timestamp/device)
       ├── Category service     (custom categories CRUD)
       ├── Search service       (gallery list/filter/edit)
       ├── Memory service       (timeline + notes)
       ├── Chatbot service      (Q&A over your images + timeline)
       └── Vet/Map service      (OSM Overpass — nearby vet clinics)
+
+Redis (queue) ── AI Tagging worker(s) ── OpenAI/Gemini (user's own key)
+      ▲                  │
+      └── enqueued by Upload service     writes result back to Supabase
 ```
 
 All state lives in Supabase: Postgres (with row-level security), Supabase
@@ -60,7 +64,64 @@ therefore *can* bypass RLS — each one manually filters every query by
 application code, not RLS alone. Never ship the service-role key to the
 browser.
 
+### Asynchronous AI tagging (event queue)
+
+AI tagging is the one step in the upload pipeline that calls an external,
+sometimes-slow, sometimes-unreliable third party (OpenAI/Gemini). Rather
+than call it synchronously from `upload-service` — where a provider
+timeout would fail the whole upload — it's decoupled via a Redis-backed
+job queue (RQ):
+
+1. `upload-service` stores the file and extracts EXIF synchronously (both
+   fast, both local to our own infrastructure), writes the `images` row
+   with `tagging_status: "processing"`, and enqueues a tagging job.
+2. One or more `ai-tagging-worker` containers consume that queue in the
+   background, fetch the image bytes from storage, call the AI provider,
+   and update the row to `tagging_status: "ready"` (or `"failed"` /
+   `"skipped_no_key"`, with the reason logged to the memory timeline).
+3. The frontend shows a "🕒 tagging…" badge on a photo while processing,
+   and polls briefly until it resolves — so tags visibly appear a few
+   seconds after upload without a manual refresh.
+
+This means an upload never fails because of AI provider slowness or
+downtime, and every image's photo (bytes, storage, EXIF) is safely
+persisted regardless of AI availability.
+
+### Horizontal scaling
+
+The tagging workers are intentionally decoupled from any specific service
+address — they pull from a shared queue rather than being called by URL —
+so scaling them is just running more consumers of the same queue:
+```bash
+docker compose up --scale ai-tagging-worker=3
+```
+No load-balancer configuration is needed for this: Docker Compose's
+embedded DNS already round-robins requests across any scaled replica
+addressed by service name (e.g. `http://exif-service:5005` from another
+container), so `docker compose up --scale exif-service=3` works the same
+way today with zero code changes, for services that *are* called
+synchronously by URL. A custom reverse-proxy load balancer would be
+redundant in a Compose (single-host) setup — it starts to matter in a
+multi-host orchestrator like Kubernetes, which does its own service
+discovery/load-balancing the same way for a different reason (spreading
+work across physical nodes, not just processes).
+
+### Observability
+
+Prometheus + Grafana are included, scraping a `/metrics` endpoint
+(via `prometheus-flask-exporter`) exposed by every HTTP service:
+```bash
+docker compose up --build
+# Grafana:    http://localhost:3000  (admin / admin)
+# Prometheus: http://localhost:9090
+```
+Grafana comes pre-provisioned with a "PetCMS — Service Overview" dashboard
+(`monitoring/grafana/provisioning/dashboards/petcms-overview.json`)
+showing request rate, average latency, and HTTP status code breakdown per
+service — no manual dashboard setup needed.
+
 ## Setup
+
 
 ### 1. Create a Supabase project
 1. Create a project at https://supabase.com.
@@ -134,6 +195,17 @@ scripts/
   once already during development; see `docs/GREEN_AI_AND_ARCHITECTURE.md`
   for the broader design notes). If tagging silently stops working, check
   the current valid model string for your provider first.
+- **Images are normalized before tagging** (`ai-tagging-service`'s
+  `normalize_image`): web-downloaded photos in WEBP, CMYK JPEG, or with a
+  mismatched extension were previously failing AI tagging silently, since
+  vision APIs can reject those formats/color modes outright. Every image
+  is now re-encoded to a clean sRGB JPEG before being sent to the provider.
+- **The Redis queue has no persistence configured** (default in-memory
+  `redis:7-alpine`). If the `redis` container restarts while jobs are
+  queued or in flight, those jobs are lost — the affected photos stay at
+  `tagging_status: "processing"` indefinitely. For anything beyond local
+  use, either enable Redis AOF/RDB persistence or accept that a stuck
+  "processing" badge means a manual re-tag is needed.
 
 ## Editing the shared auth/DB helper
 

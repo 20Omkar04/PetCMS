@@ -4,10 +4,12 @@ Thin wrapper around Supabase Storage: uploads bytes into the user's own
 folder (pet-images/<user_id>/<filename>) and issues signed URLs for viewing.
 """
 import uuid
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, Response
 from common import get_admin_client, require_auth, STORAGE_BUCKET
 
 app = Flask(__name__)
+from prometheus_flask_exporter import PrometheusMetrics
+PrometheusMetrics(app)  # exposes GET /metrics for Prometheus scraping
 
 
 @app.get("/health")
@@ -47,6 +49,22 @@ def signed_url(user):
     admin = get_admin_client()
     signed = admin.storage.from_(STORAGE_BUCKET).create_signed_url(path, 60 * 60)
     return jsonify({"signed_url": signed.get("signedURL") or signed.get("signed_url")})
+
+
+# Internal endpoint — called only by ai-tagging-worker (not exposed via gateway,
+# not behind @require_auth since the worker has no user JWT, only a stored path
+# it already received from upload-service at enqueue time).
+@app.get("/internal/download")
+def internal_download():
+    path = request.args.get("path", "")
+    if not path:
+        return jsonify({"error": "path is required"}), 400
+    admin = get_admin_client()
+    try:
+        file_bytes = admin.storage.from_(STORAGE_BUCKET).download(path)
+    except Exception as e:
+        return jsonify({"error": f"could not download: {e}"}), 502
+    return Response(file_bytes, mimetype="application/octet-stream")
 
 
 @app.delete("/delete")
