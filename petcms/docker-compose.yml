@@ -80,7 +80,7 @@ services:
   #   docker compose up --scale ai-tagging-worker=3
   ai-tagging-worker:
     build: ./services/ai-tagging-service
-    command: ["rq", "worker", "petcms-tagging", "--url", "redis://redis:6379/0"]
+    command: ["python", "-m", "rq", "worker", "petcms-tagging", "--url", "redis://redis:6379/0"]
     environment:
       <<: *common-env
       USER_SERVICE_URL: ${USER_SERVICE_URL}
@@ -133,7 +133,10 @@ services:
 
   vet-map-service:
     build: ./services/vet-map-service
-    environment: *common-env
+    environment:
+      <<: *common-env
+      REDIS_URL: redis://redis:6379/0
+    depends_on: [redis]
     networks: [petcms-net]
 
   prometheus:

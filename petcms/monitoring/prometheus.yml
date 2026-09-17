@@ -1,0 +1,19 @@
+global:
+  scrape_interval: 10s
+
+scrape_configs:
+  - job_name: "petcms"
+    static_configs:
+      - targets:
+          - "gateway:8080"
+          - "auth-service:5001"
+          - "user-service:5002"
+          - "upload-service:5003"
+          - "storage-service:5004"
+          - "exif-service:5005"
+          - "ai-tagging-service:5006"
+          - "category-service:5007"
+          - "search-service:5008"
+          - "memory-service:5009"
+          - "chatbot-service:5010"
+          - "vet-map-service:5011"

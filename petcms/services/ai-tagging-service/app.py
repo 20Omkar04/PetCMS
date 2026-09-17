@@ -65,8 +65,41 @@ def get_user_key(user_id):
     return decrypt_secret(data["encrypted_api_key"]), data.get("api_key_provider", "openai")
 
 
+import time as _time
+
+
+def _post_with_retry(url, retries=4, base_delay=1.5, **kwargs):
+    """Retries on 429 (rate limit), 503 (transient 'high demand'), and
+    connection-level failures (timeouts, DNS/connection errors) with
+    exponential backoff — the latter is just as common as a 503 when a
+    provider is under heavy load, since an overloaded server often stops
+    responding at all rather than responding slowly. Google's own Gemini
+    troubleshooting docs recommend exactly this pattern; their official
+    SDKs do it by default, our raw requests calls did not, until now.
+    Anything else (4xx auth errors, etc.) is raised immediately without
+    retrying, since retrying a bad API key would just waste time."""
+    last_exc = None
+    for attempt in range(retries):
+        try:
+            resp = requests.post(url, **kwargs)
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+            last_exc = e
+            if attempt < retries - 1:
+                _time.sleep(base_delay * (2 ** attempt))
+            continue
+        if resp.status_code not in (429, 503):
+            resp.raise_for_status()
+            return resp
+        last_exc = requests.exceptions.HTTPError(
+            f"{resp.status_code} Server Error: {resp.reason} for url: {url}", response=resp
+        )
+        if attempt < retries - 1:
+            _time.sleep(base_delay * (2 ** attempt))
+    raise last_exc
+
+
 def tag_with_openai(api_key, image_b64, mime):
-    resp = requests.post(
+    resp = _post_with_retry(
         "https://api.openai.com/v1/chat/completions",
         headers={"Authorization": f"Bearer {api_key}"},
         json={
@@ -82,12 +115,11 @@ def tag_with_openai(api_key, image_b64, mime):
         },
         timeout=30,
     )
-    resp.raise_for_status()
     return resp.json()["choices"][0]["message"]["content"]
 
 
 def tag_with_gemini(api_key, image_b64, mime):
-    resp = requests.post(
+    resp = _post_with_retry(
         f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent?key={api_key}",
         json={
             "contents": [{
@@ -99,7 +131,6 @@ def tag_with_gemini(api_key, image_b64, mime):
         },
         timeout=30,
     )
-    resp.raise_for_status()
     return resp.json()["candidates"][0]["content"]["parts"][0]["text"]
 
 
@@ -110,7 +141,13 @@ def generate_tags(file_bytes, user_id):
     normalized_bytes, mime = normalize_image(file_bytes)
     image_b64 = base64.b64encode(normalized_bytes).decode()
 
-    api_key, provider = get_user_key(user_id)
+    try:
+        api_key, provider = get_user_key(user_id)
+    except Exception as e:
+        return [], (f"could not read/decrypt the stored API key ({e}). It may have been saved "
+                     f"under a different encryption secret than the one currently running — "
+                     f"try removing it and re-saving it in Settings.")
+
     if not api_key:
         return [], "no AI API key configured for this user"
 

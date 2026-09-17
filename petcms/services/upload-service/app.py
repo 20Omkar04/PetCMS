@@ -129,7 +129,7 @@ def upload_image(user):
                 "mime_type": file.mimetype,
                 "manual_tags": manual_tags,
             },
-            job_timeout=90,
+            job_timeout=200,  # covers the AI-tagging retry wrapper's worst case (up to ~4 attempts with backoff)
         )
     except Exception as e:
         try:

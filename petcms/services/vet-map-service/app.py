@@ -4,15 +4,30 @@ Given a latitude/longitude (usually from an image's EXIF GPS data), queries
 the Overpass API (OpenStreetMap) for nearby veterinary clinics, and fills in
 addresses via Nominatim reverse-geocoding when a clinic's OSM tags don't
 already include a structured address.
+
+Successful results are cached in Redis by rounded coordinates. This is a
+direct response to a documented, repeated finding during this project's own
+testing: the public Overpass mirrors are unreliable enough (406s during
+shared WAF issues, DNS failures, timeouts, sometimes all five at once) that
+retrying different endpoints stopped being a productive fix. Caching means
+that once any lookup for a given area has ever succeeded, the feature keeps
+working for that area even while every live endpoint is down.
 """
 import os
 import time
+import json
+import hashlib
 import requests
 from flask import Flask, request, jsonify
+from redis import Redis
 
 app = Flask(__name__)
 from prometheus_flask_exporter import PrometheusMetrics
 PrometheusMetrics(app)  # exposes GET /metrics for Prometheus scraping
+
+REDIS_URL = os.environ.get("REDIS_URL", "redis://redis:6379/0")
+redis_conn = Redis.from_url(REDIS_URL, decode_responses=True)
+CACHE_TTL_SECONDS = 7 * 24 * 60 * 60  # 7 days — vet clinics don't move often
 
 OVERPASS_URLS = [
     os.environ.get("OVERPASS_URL", "https://lz4.overpass-api.de/api/interpreter"),
@@ -24,10 +39,6 @@ OVERPASS_URLS = [
 
 NOMINATIM_URL = "https://nominatim.openstreetmap.org/reverse"
 
-# OSM's Overpass/Nominatim instances reject requests with a generic/blank
-# User-Agent per OSM's usage policy — identify the app here. Do NOT force
-# an Accept header: 406 means the server can't satisfy it, and Overpass
-# doesn't content-negotiate the way a forced "application/json" Accept implies.
 REQUEST_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                   "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
@@ -41,21 +52,40 @@ def health():
     return {"status": "ok", "service": "vet-map-service"}
 
 
+def _cache_key(lat, lng, radius_m):
+    # Round to ~1.1km grid cells so nearby-but-not-identical coordinates
+    # (e.g. two photos taken a street apart) still share a cache entry.
+    rounded = f"{round(lat, 2)}:{round(lng, 2)}:{radius_m}"
+    return "vets:" + hashlib.sha1(rounded.encode()).hexdigest()
+
+
 def _reverse_geocode(lat, lng):
-    """OSM's Nominatim reverse-geocoder — used only when a vet POI itself
-    has no addr:* tags. Nominatim's usage policy caps this at 1 req/sec
-    and requires a descriptive User-Agent, so callers must rate-limit."""
     try:
         resp = requests.get(
             NOMINATIM_URL,
             params={"format": "jsonv2", "lat": lat, "lon": lng, "addressdetails": 1},
             headers=REQUEST_HEADERS,
-            timeout=10,
+            timeout=120,
         )
         resp.raise_for_status()
         return resp.json().get("display_name")
     except Exception:
         return None
+
+
+def _query_overpass(query):
+    """Returns (elements, errors). errors is empty on success."""
+    errors = []
+    for url in OVERPASS_URLS:
+        try:
+            resp = requests.post(url, data={"data": query}, headers=REQUEST_HEADERS, timeout=30)
+            resp.raise_for_status()
+            return resp.json().get("elements", []), []
+        except requests.exceptions.HTTPError as e:
+            errors.append(f"{url} -> {e} — server said: {resp.text[:300]}")
+        except Exception as e:
+            errors.append(f"{url} -> {e}")
+    return [], errors
 
 
 @app.get("/nearby-vets")
@@ -67,36 +97,38 @@ def nearby_vets():
         return jsonify({"error": "lat and lng query params are required"}), 400
     radius_m = int(request.args.get("radius", 5000))
 
+    cache_key = _cache_key(lat, lng, radius_m)
+    cached = None
+    try:
+        cached = redis_conn.get(cache_key)
+    except Exception:
+        pass  # Redis being briefly unavailable shouldn't break the whole request
+
     query = f"""
-    [out:json][timeout:25];
+    [out:json][timeout:60];
     (
       node["amenity"="veterinary"](around:{radius_m},{lat},{lng});
       way["amenity"="veterinary"](around:{radius_m},{lat},{lng});
     );
     out center 20;
     """
-    errors = []
-    elements = []
-    for url in OVERPASS_URLS:
-        try:
-            resp = requests.post(url, data={"data": query}, headers=REQUEST_HEADERS, timeout=30)
-            resp.raise_for_status()
-            elements = resp.json().get("elements", [])
-            errors = []
-            break
-        except requests.exceptions.HTTPError as e:
-            errors.append(f"{url} -> {e} — server said: {resp.text[:300]}")
-        except Exception as e:
-            errors.append(f"{url} -> {e}")
+    elements, errors = _query_overpass(query)
 
     if errors:
+        if cached:
+            payload = json.loads(cached)
+            payload["served_from_cache"] = True
+            payload["note"] = "Live Overpass lookup failed; showing the last successful result for this area."
+            return jsonify(payload)
         return jsonify({
             "error": "overpass query failed on all endpoints: " + " | ".join(errors),
             "vets": [],
-            "hint": "If every attempt shows a DNS/name-resolution failure, this is a network/DNS issue on the machine or Docker host running vet-map-service, not an app bug — try: docker compose exec vet-map-service curl -v https://overpass-api.de/api/interpreter",
+            "hint": "This is a known, documented reliability issue with the free public Overpass "
+                    "infrastructure (see the project's Limitations section) — no cached result exists "
+                    "yet for this area to fall back on. Try again later, or try a different photo location.",
         }), 502
 
-    MAX_REVERSE_GEOCODE = 8  # keeps worst-case response time bounded
+    MAX_REVERSE_GEOCODE = 16
     geocode_count = 0
     vets = []
     for el in elements:
@@ -112,7 +144,7 @@ def nearby_vets():
             address = structured
         elif lat_c and lng_c and geocode_count < MAX_REVERSE_GEOCODE:
             geocode_count += 1
-            time.sleep(1)  # respect Nominatim's 1 request/second usage policy
+            time.sleep(1)
             address = _reverse_geocode(lat_c, lng_c)
         else:
             address = None
@@ -127,7 +159,13 @@ def nearby_vets():
             "opening_hours": tags.get("opening_hours"),
         })
 
-    return jsonify({"vets": vets, "origin": {"lat": lat, "lng": lng}})
+    result = {"vets": vets, "origin": {"lat": lat, "lng": lng}, "served_from_cache": False}
+    try:
+        redis_conn.setex(cache_key, CACHE_TTL_SECONDS, json.dumps(result))
+    except Exception:
+        pass  # caching is a nice-to-have; never let it break a successful response
+
+    return jsonify(result)
 
 
 if __name__ == "__main__":

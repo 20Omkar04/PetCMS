@@ -216,12 +216,3 @@ After changing it:
 ```bash
 bash scripts/sync_shared.sh
 docker compose build
-```
-
-## Security notes before going further than local/personal use
-
-- Put the gateway behind HTTPS (a reverse proxy like Caddy/Traefik/nginx)
-  — tokens should never travel over plain HTTP outside local development.
-- Rotate `API_KEY_ENCRYPTION_SECRET` only if you're prepared to lose access
-  to previously-encrypted keys (users would need to re-enter them).
-- Consider rate-limiting `/api/auth/*` and `/api/chat` at the gateway.

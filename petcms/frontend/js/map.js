@@ -74,6 +74,13 @@ const PetMap = (() => {
       return;
     }
     listEl.innerHTML = "";
+    if (data.served_from_cache) {
+      const note = document.createElement("div");
+      note.className = "sub";
+      note.style.cssText = "margin-bottom:10px; color:var(--ochre-dark); font-weight:600;";
+      note.textContent = "🕒 " + (data.note || "Showing a previously saved result — live lookup is currently unavailable.");
+      listEl.appendChild(note);
+    }
     vets.forEach((v) => {
       if (v.lat && v.lng) {
         L.circleMarker([v.lat, v.lng], { radius: 7, color: "#33513E", fillColor: "#C98A3D", fillOpacity: 1 })
