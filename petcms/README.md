@@ -10,7 +10,8 @@ It's built as 12 small Dockerized services behind a single gateway, using
 Supabase for auth/database/storage, and vanilla HTML/CSS/JS on the frontend
 — no frameworks, no build step.
 
-![PetCMS architecture](docs/architecture.png)
+<img width="1900" height="1440" alt="image" src="https://github.com/user-attachments/assets/def6fffe-9fcf-4b1c-9071-cdd62be419ff" />
+
 
 ## Features
 
